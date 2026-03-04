@@ -1,1 +1,19 @@
-_target_: src.models.components.m3.M3
+_target_: models.components.m3.M3
+
+in_channels: 1
+kernel_size: 3
+
+channels:
+  - 32
+  - 48
+  - 64
+  - 80
+  - 96
+  - 112
+  - 128
+  - 144
+  - 160
+  - 176
+
+linear_in_features: 11264
+num_classes: 10

@@ -1,38 +1,54 @@
 from torch import nn
 
-class ConvBlock(nn.Module):
-  def __init__(self, kernel_size, in_channels, out_channels):
-    super().__init__()
-    self.seq_of_layers = nn.Sequential(
-        nn.Conv2d(kernel_size = kernel_size,
-                  in_channels = in_channels,
-                  out_channels = out_channels),
-        nn.BatchNorm2d(num_features = out_channels),
-        nn.ReLU()
-    )
 
-  def forward(self, x):
-    return self.seq_of_layers(x)
+class ConvBlock(nn.Module):
+    def __init__(self, kernel_size, in_channels, out_channels):
+        super().__init__()
+        self.seq_of_layers = nn.Sequential(
+            nn.Conv2d(
+                in_channels=in_channels,
+                out_channels=out_channels,
+                kernel_size=kernel_size,
+            ),
+            nn.BatchNorm2d(out_channels),
+            nn.ReLU(),
+        )
+
+    def forward(self, x):
+        return self.seq_of_layers(x)
+
 
 class M3(nn.Module):
-  def __init__(self):
-    super().__init__()
-    self.seq_of_layers = nn.Sequential(
-        ConvBlock(3, 1, 32),
-        ConvBlock(3, 32, 48),
-        ConvBlock(3, 48, 64),
-        ConvBlock(3, 64, 80),
-        ConvBlock(3, 80, 96),
-        ConvBlock(3, 96, 112),
-        ConvBlock(3, 112, 128),
-        ConvBlock(3, 128, 144),
-        ConvBlock(3, 144, 160),
-        ConvBlock(3, 160, 176),
-        nn.Flatten(),
-        nn.Linear(in_features = 11264,
-                  out_features = 10),
-        nn.BatchNorm1d(num_features = 10)
-    )
+    def __init__(
+        self,
+        in_channels: int,
+        channels: list,
+        kernel_size: int,
+        num_classes: int,
+        linear_in_features: int,
+    ):
+        super().__init__()
 
-  def forward(self, x):
-    return self.seq_of_layers(x)
+        layers = []
+        current_in = in_channels
+
+        for ch in channels:
+            layers.append(
+                ConvBlock(
+                    kernel_size=kernel_size,
+                    in_channels=current_in,
+                    out_channels=ch,
+                )
+            )
+            current_in = ch
+
+        layers.extend([
+            nn.Flatten(),
+            nn.Linear(linear_in_features, num_classes),
+            nn.BatchNorm1d(num_classes),
+        ])
+
+        self.seq_of_layers = nn.Sequential(*layers)
+
+    def forward(self, x):
+        return self.seq_of_layers(x)
