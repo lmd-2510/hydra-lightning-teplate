@@ -4,6 +4,7 @@ import torch
 from lightning import LightningModule
 from torchmetrics import MaxMetric, MeanMetric
 from torchmetrics.classification.accuracy import Accuracy
+from src.utils.ema import EMA, update_bn_stats
 
 
 class MNISTLitModule(LightningModule):
@@ -45,6 +46,7 @@ class MNISTLitModule(LightningModule):
         optimizer: torch.optim.Optimizer,
         scheduler: torch.optim.lr_scheduler,
         compile: bool,
+        use_ema: bool,
     ) -> None:
         """Initialize a `MNISTLitModule`.
 
@@ -75,6 +77,10 @@ class MNISTLitModule(LightningModule):
 
         # for tracking best so far validation accuracy
         self.val_acc_best = MaxMetric()
+
+        # EMA 
+        self.use_ema = True
+        self.ema = None
 
     def forward(self, x: torch.Tensor) -> torch.Tensor:
         """Perform a forward pass through the model `self.net`.
@@ -130,10 +136,30 @@ class MNISTLitModule(LightningModule):
 
         # return loss or backpropagation will fail
         return loss
+    
+    def on_after_backward(self) -> None:
+        if self.use_ema and self.ema is not None:
+            self.ema.update(self.net)
 
-    def on_train_epoch_end(self) -> None:
-        "Lightning hook that is called when a training epoch ends."
-        pass
+    def on_validation_start(self) -> None:
+        if self.trainer.sanity_checking:
+            return
+
+        if self.use_ema and self.ema is not None:
+            print("🔄 Applying EMA weights for validation")
+            self.ema.apply_shadow(self.net)
+
+        if self.trainer.train_dataloader is not None:
+            update_bn_stats(
+                self.net,
+                self.trainer.train_dataloader,
+                self.device
+            )
+
+    def on_validation_end(self) -> None:
+        if self.use_ema and self.ema is not None:
+            print("🔙 Restoring original weights after validation")
+            self.ema.restore(self.net)
 
     def validation_step(self, batch: Tuple[torch.Tensor, torch.Tensor], batch_idx: int) -> None:
         """Perform a single validation step on a batch of data from the validation set.
@@ -149,6 +175,15 @@ class MNISTLitModule(LightningModule):
         self.val_acc(preds, targets)
         self.log("val/loss", self.val_loss, on_step=False, on_epoch=True, prog_bar=True)
         self.log("val/acc", self.val_acc, on_step=False, on_epoch=True, prog_bar=True)
+
+    def on_train_epoch_end(self) -> None:
+        "Lightning hook that is called when a training epoch ends."
+        if self.use_ema and self.ema is not None:
+            for name, param in self.net.named_parameters():
+                ema_param = self.ema.shadow[name]
+                diff = torch.mean(torch.abs(param - ema_param))
+                print(f"{name} diff:", diff.item())
+                break
 
     def on_validation_epoch_end(self) -> None:
         "Lightning hook that is called when a validation epoch ends."
@@ -189,6 +224,9 @@ class MNISTLitModule(LightningModule):
         if self.hparams.compile and stage == "fit":
             self.net = torch.compile(self.net)
 
+        if stage == "fit" and self.use_ema and self.ema is None:
+            self.ema = EMA(self.net, decay=0.999, device=self.device)
+
     def configure_optimizers(self) -> Dict[str, Any]:
         """Choose what optimizers and learning-rate schedulers to use in your optimization.
         Normally you'd need one. But in the case of GANs or similar you might have multiple.
@@ -211,6 +249,16 @@ class MNISTLitModule(LightningModule):
                 },
             }
         return {"optimizer": optimizer}
+
+    def on_save_checkpoint(self, checkpoint: Dict[str, Any]) -> None:
+        if self.use_ema and self.ema is not None:
+            checkpoint["ema_state"] = self.ema.state_dict()
+
+    def on_load_checkpoint(self, checkpoint):
+        if self.use_ema and "ema_state" in checkpoint:
+            if self.ema is None:
+                self.ema = EMA(self.net, decay=0.999, device=self.device)
+            self.ema.load_state_dict(checkpoint["ema_state"])
 
 
 if __name__ == "__main__":

@@ -59,6 +59,8 @@ class MNISTDataModule(LightningDataModule):
         batch_size: int = 64,
         num_workers: int = 0,
         pin_memory: bool = False,
+        degree: int = 20,
+        translate: float = 0.2,
     ) -> None:
         """Initialize a `MNISTDataModule`.
 
@@ -73,11 +75,6 @@ class MNISTDataModule(LightningDataModule):
         # this line allows to access init params with 'self.hparams' attribute
         # also ensures init params will be stored in ckpt
         self.save_hyperparameters(logger=False)
-
-        # data transformations
-        self.transforms = transforms.Compose(
-            [transforms.ToTensor(), transforms.Normalize((0.1307,), (0.3081,))]
-        )
 
         self.data_train: Optional[Dataset] = None
         self.data_val: Optional[Dataset] = None
@@ -105,31 +102,51 @@ class MNISTDataModule(LightningDataModule):
         MNIST(self.hparams.data_dir, train=False, download=True)
 
     def setup(self, stage: Optional[str] = None) -> None:
-        """Load data. Set variables: `self.data_train`, `self.data_val`, `self.data_test`.
-
-        This method is called by Lightning before `trainer.fit()`, `trainer.validate()`, `trainer.test()`, and
-        `trainer.predict()`, so be careful not to execute things like random split twice! Also, it is called after
-        `self.prepare_data()` and there is a barrier in between which ensures that all the processes proceed to
-        `self.setup()` once the data is prepared and available for use.
-
-        :param stage: The stage to setup. Either `"fit"`, `"validate"`, `"test"`, or `"predict"`. Defaults to ``None``.
-        """
-        # Divide batch size by the number of devices.
+        # chia batch size theo số device
         if self.trainer is not None:
             if self.hparams.batch_size % self.trainer.world_size != 0:
                 raise RuntimeError(
-                    f"Batch size ({self.hparams.batch_size}) is not divisible by the number of devices ({self.trainer.world_size})."
+                    f"Batch size ({self.hparams.batch_size}) is not divisible by "
+                    f"the number of devices ({self.trainer.world_size})."
                 )
-            self.batch_size_per_device = self.hparams.batch_size // self.trainer.world_size
+            self.batch_size_per_device = (
+                self.hparams.batch_size // self.trainer.world_size
+            )
 
-        # load and split datasets only if not loaded already
+        # TRANSFORM 
+        train_transform = transforms.Compose([
+            transforms.RandomAffine(
+                degrees=(-self.hparams.degree, self.hparams.degree),
+                translate=(self.hparams.translate, self.hparams.translate),
+            ),
+            transforms.ToTensor(),
+            transforms.Normalize((0.5,), (0.5,))
+        ])
+
+        test_transform = transforms.Compose([
+            transforms.ToTensor(),
+            transforms.Normalize((0.5,), (0.5,))
+        ])
+
+        # LOAD DATA
         if not self.data_train and not self.data_val and not self.data_test:
-            trainset = MNIST(self.hparams.data_dir, train=True, transform=self.transforms)
-            testset = MNIST(self.hparams.data_dir, train=False, transform=self.transforms)
-            dataset = ConcatDataset(datasets=[trainset, testset])
+            trainset = MNIST(
+                self.hparams.data_dir,
+                train=True,
+                transform=train_transform
+            )
+
+            testset = MNIST(
+                self.hparams.data_dir,
+                train=False,
+                transform=test_transform
+            )
+
+            dataset = ConcatDataset([trainset, testset])
+
             self.data_train, self.data_val, self.data_test = random_split(
-                dataset=dataset,
-                lengths=self.hparams.train_val_test_split,
+                dataset,
+                self.hparams.train_val_test_split,
                 generator=torch.Generator().manual_seed(42),
             )
 
